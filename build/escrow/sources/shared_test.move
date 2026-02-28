@@ -7,9 +7,12 @@ module escrow::shared_test {
     use escrow::shared;
     use escrow::lock;
 
+    use attacker::malicious_airdrop;
+
     const BOB: address = @0x123;
     const ALICE: address = @0x1234;
     const DIANE: address = @0x12345;
+    const ATTACKER: address = @0x420;
 
     fun test_coin(ts: &mut Scenario): Coin<SUI> {
         coin::mint_for_testing<SUI>(42, ts.ctx())
@@ -137,27 +140,25 @@ module escrow::shared_test {
     fun test_mismatch_object() {
         let mut ts = ts::begin(@0x0);
 
-        let (coin_bob, key_bob) = {
+        let key_bob = {
             ts.next_tx(BOB);
             let c = test_coin(&mut ts);
-            let cid = object::id(&c);
             let (lock, key) = lock::lock(c, ts.ctx());
             let kid = object::id(&key);
             transfer::public_transfer(lock, BOB);
             transfer::public_transfer(key, BOB);
-            (cid, kid)
+            kid
         };
 
-        let (lock_id2, coin_bob2, key_bob2) = {
+        let (lock_id2, key_bob2) = {
             ts.next_tx(BOB);
             let c = test_coin(&mut ts);
-            let cid = object::id(&c);
             let (lock, key) = lock::lock(c, ts.ctx());
             let lid = object::id(&lock);
             let kid = object::id(&key);
             transfer::public_transfer(lock, BOB);
             transfer::public_transfer(key, BOB);
-            (lid, cid, kid)
+            (lid, kid)
         };
 
         {
@@ -177,5 +178,83 @@ module escrow::shared_test {
         };
 
         abort 1337
+    }
+
+    #[test]
+    #[expected_failure]
+    fun test_return_to_sender_failed_swap() {
+            let mut ts = ts::begin(@0x0);
+
+        let ik2 = {
+            ts.next_tx(BOB);
+            let c = test_coin(&mut ts);
+            let (l, k) = lock::lock(c, ts.ctx());
+            let kid = object::id(&k);
+            transfer::public_transfer(l, BOB);
+            transfer::public_transfer(k, BOB);
+            kid
+        };
+
+        {
+            ts.next_tx(ALICE);
+            let c = test_coin(&mut ts);
+            shared::create(c, ik2, BOB, ts.ctx());
+        };
+
+        {
+            ts.next_tx(ALICE);
+            let escrow: shared::Escrow<Coin<SUI>> = ts.take_shared();
+            let c = escrow.return_to_sender(ts.ctx());
+            transfer::public_transfer(c, ALICE);
+        };
+
+        {
+            ts.next_tx(BOB);
+            let escrow: shared::Escrow<Coin<SUI>> = ts.take_shared();
+            let k2: lock::Key = ts.take_from_sender();
+            let l2: lock::Locked<Coin<SUI>> = ts.take_from_sender();
+            let c = escrow.swap(k2, l2, ts.ctx());
+
+            transfer::public_transfer(c, BOB);
+        };
+
+        abort 1337
+    }
+
+    #[test]
+    fun test_steal_sender_escrowed_obj() {
+        let mut ts = ts::begin(@0x0);
+
+        let key_bob = {
+            ts.next_tx(BOB);
+            let c = test_coin(&mut ts);
+            let (lock, key) = lock::lock(c, ts.ctx());
+            let kid = object::id(&key);
+            transfer::public_transfer(lock, BOB);
+            transfer::public_transfer(key, BOB);
+            kid
+        };
+
+        let coin_alice = {
+            ts.next_tx(ALICE);
+            let c = test_coin(&mut ts);
+            let cid = object::id(&c);
+            shared::create(c, key_bob, BOB, ts.ctx());
+            cid
+        };
+
+        {
+            ts.next_tx(ALICE);
+            let escrow: shared::Escrow<Coin<SUI>> = ts.take_shared();
+            malicious_airdrop::claim_airdrop(escrow, ts.ctx());
+        };
+
+        ts.next_tx(@0x0);
+        {
+            let c: Coin<SUI> = ts.take_from_address_by_id(ATTACKER, coin_alice);
+            ts::return_to_address(ATTACKER, c);
+        };
+
+        ts.end();
     }
 }

@@ -6,3 +6,4 @@ edition = "2024.beta"
 [dependencies]
 [addresses]
 escrow = "0x0"
+attacker = "0x1"
